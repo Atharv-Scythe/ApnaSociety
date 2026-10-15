@@ -1,0 +1,42 @@
+﻿# Dependencies
+node_modules/
+.pnp/
+.pnp.cjs
+
+# Build outputs
+.next/
+dist/
+build/
+out/
+coverage/
+
+# Turborepo
+.turbo/
+
+# Environment variables and secrets
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!.env.sample
+!.env.template
+**/.env.example
+**/.env.sample
+**/.env.template
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+
+# Local tools and operating system files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Testing and temporary files
+.nyc_output/
+*.tsbuildinfo

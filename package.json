@@ -1,0 +1,38 @@
+{
+  "name": "apna-society",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ApnaSociety — Housing Society Management Platform (Hackathon Build)",
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,css}\"",
+    "db:generate": "pnpm --filter api db:generate",
+    "db:push": "pnpm --filter api db:push",
+    "db:migrate": "pnpm --filter api exec prisma migrate dev",
+    "db:seed": "pnpm --filter api db:seed",
+    "db:studio": "pnpm --filter api exec prisma studio",
+    "db:reset": "pnpm --filter api exec prisma migrate reset --force"
+  },
+  "devDependencies": {
+    "turbo": "^2.4.4",
+    "prettier": "^3.5.0"
+  },
+  "keywords": ["society", "housing", "management", "hackathon"],
+  "author": "Team ApnaSociety",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@prisma/client",
+      "@prisma/engines",
+      "esbuild",
+      "prisma"
+    ]
+  },
+  "packageManager": "pnpm@10.10.0"
+}

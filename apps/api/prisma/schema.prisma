@@ -1,0 +1,655 @@
+// ──────────────────────────────────────────────────────────
+// ApnaSociety — Prisma Schema
+// ──────────────────────────────────────────────────────────
+// Covers: Identity, RBAC, Finance (ledger-first), Notices,
+//         Complaints, Meetings, Polls, Amenities, Audit.
+// ──────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ═══════════════════════════════════════════════════════════
+// IDENTITY & MULTI-TENANCY
+// ═══════════════════════════════════════════════════════════
+
+model Society {
+  id              String   @id @default(uuid())
+  name            String
+  registrationNo  String?  @map("registration_no")
+  address         String?
+  city            String?
+  state           String?
+  pincode         String?
+  timezone        String   @default("Asia/Kolkata")
+  currency        String   @default("INR")
+  settings        Json     @default("{}")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  wings           Wing[]
+  users           User[]
+  funds           Fund[]
+  notices         Notice[]
+  complaints      Complaint[]
+  meetings        Meeting[]
+  polls           Poll[]
+  amenities       Amenity[]
+  billingCycles   BillingCycle[]
+  auditLogs       AuditLog[]
+  documents       Document[]
+
+  @@map("societies")
+}
+
+model Wing {
+  id        String   @id @default(uuid())
+  societyId String   @map("society_id")
+  name      String   // "A", "B", "Jasmine", etc.
+  floors    Int      @default(10)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  society   Society  @relation(fields: [societyId], references: [id])
+  units     Unit[]
+  notices   NoticeTarget[]
+  complaints Complaint[] @relation("WingComplaints")
+
+  @@unique([societyId, name])
+  @@map("wings")
+}
+
+model Unit {
+  id        String   @id @default(uuid())
+  societyId String   @map("society_id")
+  wingId    String   @map("wing_id")
+  number    String   // "A-101", "B-502"
+  floor     Int
+  areaSqft  Float    @map("area_sqft")
+  type      String   @default("2BHK") // UnitType enum value
+  status    String   @default("OCCUPIED") // OCCUPIED, VACANT, LOCKED
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  wing          Wing             @relation(fields: [wingId], references: [id])
+  memberships   UnitMembership[]
+  invoices      Invoice[]
+  payments      Payment[]
+  ledgerEntries LedgerEntry[]
+  complaints    Complaint[]      @relation("UnitComplaints")
+  votes         Vote[]
+  bookings      Booking[]
+
+  @@unique([societyId, number])
+  @@map("units")
+}
+
+// ═══════════════════════════════════════════════════════════
+// USERS & RBAC
+// ═══════════════════════════════════════════════════════════
+
+model User {
+  id        String   @id @default(uuid())
+  societyId String   @map("society_id")
+  name      String
+  email     String?
+  mobile    String?
+  password  String?  // hashed; null if OTP-only login
+  avatarUrl String?  @map("avatar_url")
+  status    String   @default("ACTIVE") // ACTIVE, INACTIVE, INVITED
+  lastLogin DateTime? @map("last_login")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  society        Society          @relation(fields: [societyId], references: [id])
+  memberships    UnitMembership[]
+  roleAssignments RoleAssignment[]
+  complaints     Complaint[]      @relation("ComplaintRaiser")
+  assignedComplaints Complaint[]  @relation("ComplaintAssignee")
+  complaintEvents ComplaintEvent[]
+  bookings       Booking[]
+  attendances    Attendance[]
+  noticeAcks     NoticeAck[]
+  expensesMade   Expense[]        @relation("ExpenseMaker")
+  expensesApproved Expense[]      @relation("ExpenseApprover")
+  paymentsRecorded Payment[]      @relation("PaymentRecorder")
+
+  @@unique([societyId, email])
+  @@unique([societyId, mobile])
+  @@map("users")
+}
+
+model UnitMembership {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  unitId    String   @map("unit_id")
+  relation  String   // OWNER, TENANT, FAMILY
+  canVote   Boolean  @default(false) @map("can_vote")
+  canPay    Boolean  @default(true) @map("can_pay")
+  startDate DateTime @default(now()) @map("start_date")
+  endDate   DateTime? @map("end_date")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+  unit Unit @relation(fields: [unitId], references: [id])
+
+  @@unique([userId, unitId, relation])
+  @@map("unit_memberships")
+}
+
+model Role {
+  id          String   @id @default(uuid())
+  name        String   @unique // CHAIRMAN, SECRETARY, etc.
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  assignments RoleAssignment[]
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String   @id @default(uuid())
+  action      String   // e.g. "finance:billing:generate", "notice:create"
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  roles RolePermission[]
+
+  @@unique([action])
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String @map("role_id")
+  permissionId String @map("permission_id")
+
+  role       Role       @relation(fields: [roleId], references: [id])
+  permission Permission @relation(fields: [permissionId], references: [id])
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model RoleAssignment {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  roleId    String   @map("role_id")
+  scopeType String   @map("scope_type") // SOCIETY, WING, UNIT
+  scopeId   String   @map("scope_id")   // the society/wing/unit UUID
+  validFrom DateTime @default(now()) @map("valid_from")
+  validTo   DateTime? @map("valid_to")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+  role Role @relation(fields: [roleId], references: [id])
+
+  @@map("role_assignments")
+}
+
+// ═══════════════════════════════════════════════════════════
+// FINANCE — LEDGER-FIRST DESIGN
+// ═══════════════════════════════════════════════════════════
+
+model Fund {
+  id        String   @id @default(uuid())
+  societyId String   @map("society_id")
+  name      String   // "General Maintenance", "Sinking Fund"
+  type      String   // FundType enum value
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  society       Society        @relation(fields: [societyId], references: [id])
+  chargeRules   ChargeRule[]
+  invoiceLines  InvoiceLine[]
+  ledgerEntries LedgerEntry[]
+  expenses      Expense[]
+
+  @@unique([societyId, name])
+  @@map("funds")
+}
+
+model ChargeRule {
+  id            String    @id @default(uuid())
+  fundId        String    @map("fund_id")
+  basis         String    // FLAT, PER_SQFT, UNIT_TYPE
+  amount        Decimal   @db.Decimal(12, 2)
+  frequency     String    @default("MONTHLY") // MONTHLY, QUARTERLY, ANNUAL, ONE_TIME
+  effectiveFrom DateTime  @map("effective_from")
+  effectiveTo   DateTime? @map("effective_to")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  fund Fund @relation(fields: [fundId], references: [id])
+
+  @@map("charge_rules")
+}
+
+model BillingCycle {
+  id          String   @id @default(uuid())
+  societyId   String   @map("society_id")
+  periodStart DateTime @map("period_start")
+  periodEnd   DateTime @map("period_end")
+  dueDate     DateTime @map("due_date")
+  status      String   @default("DRAFT") // DRAFT, ISSUED, CLOSED
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  society  Society   @relation(fields: [societyId], references: [id])
+  invoices Invoice[]
+
+  @@unique([societyId, periodStart, periodEnd])
+  @@map("billing_cycles")
+}
+
+model Invoice {
+  id        String   @id @default(uuid())
+  unitId    String   @map("unit_id")
+  cycleId   String   @map("cycle_id")
+  number    String   @unique // INV-2026-10-0001
+  total     Decimal  @db.Decimal(12, 2)
+  status    String   @default("PENDING") // InvoiceStatus
+  issuedAt  DateTime @default(now()) @map("issued_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  unit        Unit               @relation(fields: [unitId], references: [id])
+  cycle       BillingCycle       @relation(fields: [cycleId], references: [id])
+  lines       InvoiceLine[]
+  allocations PaymentAllocation[]
+
+  @@unique([unitId, cycleId])
+  @@map("invoices")
+}
+
+model InvoiceLine {
+  id          String  @id @default(uuid())
+  invoiceId   String  @map("invoice_id")
+  fundId      String  @map("fund_id")
+  description String
+  amount      Decimal @db.Decimal(12, 2)
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id])
+  fund    Fund    @relation(fields: [fundId], references: [id])
+
+  @@map("invoice_lines")
+}
+
+model Payment {
+  id           String   @id @default(uuid())
+  unitId       String   @map("unit_id")
+  amount       Decimal  @db.Decimal(12, 2)
+  method       String   // PaymentMethod enum
+  gatewayRef   String?  @unique @map("gateway_ref")
+  status       String   @default("INITIATED") // PaymentStatus
+  receivedAt   DateTime? @map("received_at")
+  recordedById String?  @map("recorded_by_id")
+  proofUrl     String?  @map("proof_url")
+  notes        String?
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  unit        Unit               @relation(fields: [unitId], references: [id])
+  recordedBy  User?              @relation("PaymentRecorder", fields: [recordedById], references: [id])
+  allocations PaymentAllocation[]
+
+  @@map("payments")
+}
+
+model PaymentAllocation {
+  id        String  @id @default(uuid())
+  paymentId String  @map("payment_id")
+  invoiceId String  @map("invoice_id")
+  amount    Decimal @db.Decimal(12, 2)
+
+  payment Payment @relation(fields: [paymentId], references: [id])
+  invoice Invoice @relation(fields: [invoiceId], references: [id])
+
+  @@map("payment_allocations")
+}
+
+/// Immutable, append-only financial ledger.
+/// Corrections are REVERSING entries, never edits.
+model LedgerEntry {
+  id        String   @id @default(uuid())
+  societyId String   @map("society_id")
+  unitId    String?  @map("unit_id")
+  fundId    String   @map("fund_id")
+  account   String   // LedgerAccount enum
+  debit     Decimal  @default(0) @db.Decimal(12, 2)
+  credit    Decimal  @default(0) @db.Decimal(12, 2)
+  refType   String   @map("ref_type") // INVOICE, PAYMENT, EXPENSE, ADJUSTMENT
+  refId     String   @map("ref_id")
+  narration String?
+  postedAt  DateTime @default(now()) @map("posted_at")
+
+  fund Fund  @relation(fields: [fundId], references: [id])
+  unit Unit? @relation(fields: [unitId], references: [id])
+
+  @@map("ledger_entries")
+}
+
+model Vendor {
+  id        String   @id @default(uuid())
+  societyId String   @map("society_id")
+  name      String
+  contact   String?
+  gstNo     String?  @map("gst_no")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  expenses Expense[]
+
+  @@map("vendors")
+}
+
+model Expense {
+  id         String   @id @default(uuid())
+  fundId     String   @map("fund_id")
+  vendorId   String?  @map("vendor_id")
+  amount     Decimal  @db.Decimal(12, 2)
+  category   String?
+  description String?
+  billUrl    String?  @map("bill_url")
+  status     String   @default("PENDING") // PENDING, APPROVED, REJECTED, PAID
+  makerId    String   @map("maker_id")
+  approverId String?  @map("approver_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  fund     Fund    @relation(fields: [fundId], references: [id])
+  vendor   Vendor? @relation(fields: [vendorId], references: [id])
+  maker    User    @relation("ExpenseMaker", fields: [makerId], references: [id])
+  approver User?   @relation("ExpenseApprover", fields: [approverId], references: [id])
+
+  @@map("expenses")
+}
+
+// ═══════════════════════════════════════════════════════════
+// NOTICES
+// ═══════════════════════════════════════════════════════════
+
+model Notice {
+  id        String   @id @default(uuid())
+  societyId String   @map("society_id")
+  title     String
+  body      String
+  category  String   // NoticeCategory enum
+  pinned    Boolean  @default(false)
+  publishAt DateTime? @map("publish_at")
+  expireAt  DateTime? @map("expire_at")
+  status    String   @default("PUBLISHED") // DRAFT, PUBLISHED, ARCHIVED
+  version   Int      @default(1)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  society Society       @relation(fields: [societyId], references: [id])
+  targets NoticeTarget[]
+  acks    NoticeAck[]
+
+  @@map("notices")
+}
+
+model NoticeTarget {
+  id       String  @id @default(uuid())
+  noticeId String  @map("notice_id")
+  wingId   String? @map("wing_id")
+  unitId   String? @map("unit_id")
+  // If both wingId and unitId are null → society-wide
+
+  notice Notice @relation(fields: [noticeId], references: [id])
+  wing   Wing?  @relation(fields: [wingId], references: [id])
+
+  @@map("notice_targets")
+}
+
+model NoticeAck {
+  id       String   @id @default(uuid())
+  noticeId String   @map("notice_id")
+  userId   String   @map("user_id")
+  ackedAt  DateTime @default(now()) @map("acked_at")
+
+  notice Notice @relation(fields: [noticeId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@unique([noticeId, userId])
+  @@map("notice_acks")
+}
+
+// ═══════════════════════════════════════════════════════════
+// COMPLAINTS
+// ═══════════════════════════════════════════════════════════
+
+model Complaint {
+  id         String   @id @default(uuid())
+  societyId  String   @map("society_id")
+  unitId     String?  @map("unit_id")
+  wingId     String?  @map("wing_id")
+  raisedById String   @map("raised_by_id")
+  assigneeId String?  @map("assignee_id")
+  title      String
+  description String
+  category   String   // ComplaintCategory
+  priority   String   @default("MEDIUM") // ComplaintPriority
+  status     String   @default("OPEN") // ComplaintStatus
+  anonymous  Boolean  @default(false)
+  rating     Int?     // 1-5 resolution feedback
+  slaDueAt   DateTime? @map("sla_due_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  society  Society          @relation(fields: [societyId], references: [id])
+  unit     Unit?            @relation("UnitComplaints", fields: [unitId], references: [id])
+  wing     Wing?            @relation("WingComplaints", fields: [wingId], references: [id])
+  raisedBy User             @relation("ComplaintRaiser", fields: [raisedById], references: [id])
+  assignee User?            @relation("ComplaintAssignee", fields: [assigneeId], references: [id])
+  events   ComplaintEvent[]
+
+  @@map("complaints")
+}
+
+model ComplaintEvent {
+  id          String   @id @default(uuid())
+  complaintId String   @map("complaint_id")
+  actorId     String   @map("actor_id")
+  type        String   // COMMENT, STATUS_CHANGE, ASSIGNMENT
+  visibility  String   @default("PUBLIC") // PUBLIC, INTERNAL
+  content     String?
+  metadata    Json?    // e.g. { from: "OPEN", to: "ACKNOWLEDGED" }
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  complaint Complaint @relation(fields: [complaintId], references: [id])
+  actor     User      @relation(fields: [actorId], references: [id])
+
+  @@map("complaint_events")
+}
+
+// ═══════════════════════════════════════════════════════════
+// MEETINGS
+// ═══════════════════════════════════════════════════════════
+
+model Meeting {
+  id             String   @id @default(uuid())
+  societyId      String   @map("society_id")
+  title          String
+  type           String   // MeetingType enum
+  scopeType      String   @map("scope_type") // SOCIETY, WING
+  scopeId        String?  @map("scope_id")
+  scheduledAt    DateTime @map("scheduled_at")
+  venue          String?
+  onlineLink     String?  @map("online_link")
+  agenda         String?  // Markdown or JSON
+  minutesUrl     String?  @map("minutes_url")
+  quorumRequired Int?     @map("quorum_required")
+  status         String   @default("SCHEDULED") // SCHEDULED, IN_PROGRESS, COMPLETED, CANCELLED
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  society     Society      @relation(fields: [societyId], references: [id])
+  attendances Attendance[]
+
+  @@map("meetings")
+}
+
+model Attendance {
+  id        String   @id @default(uuid())
+  meetingId String   @map("meeting_id")
+  userId    String   @map("user_id")
+  response  String   // ATTENDING, PROXY, NOT_ATTENDING
+  createdAt DateTime @default(now()) @map("created_at")
+
+  meeting Meeting @relation(fields: [meetingId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
+
+  @@unique([meetingId, userId])
+  @@map("attendances")
+}
+
+// ═══════════════════════════════════════════════════════════
+// POLLS & VOTING
+// ═══════════════════════════════════════════════════════════
+
+model Poll {
+  id              String   @id @default(uuid())
+  societyId       String   @map("society_id")
+  wingId          String?  @map("wing_id")
+  title           String
+  description     String?
+  type            String   // PollType enum
+  ownersOnly      Boolean  @default(true) @map("owners_only")
+  secretBallot    Boolean  @default(false) @map("secret_ballot")
+  quorumPercent   Int?     @map("quorum_percent")
+  passThreshold   Int      @default(50) @map("pass_threshold") // percentage to pass
+  opensAt         DateTime @map("opens_at")
+  closesAt        DateTime @map("closes_at")
+  status          String   @default("DRAFT") // PollStatus
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  society Society      @relation(fields: [societyId], references: [id])
+  options PollOption[]
+  votes   Vote[]
+
+  @@map("polls")
+}
+
+model PollOption {
+  id     String @id @default(uuid())
+  pollId String @map("poll_id")
+  label  String
+  order  Int    @default(0)
+
+  poll  Poll   @relation(fields: [pollId], references: [id])
+  votes Vote[]
+
+  @@map("poll_options")
+}
+
+/// One vote per unit per poll — enforced at DB level.
+model Vote {
+  id       String   @id @default(uuid())
+  pollId   String   @map("poll_id")
+  optionId String   @map("option_id")
+  unitId   String   @map("unit_id") // voting entity
+  castAt   DateTime @default(now()) @map("cast_at")
+
+  poll   Poll       @relation(fields: [pollId], references: [id])
+  option PollOption @relation(fields: [optionId], references: [id])
+  unit   Unit       @relation(fields: [unitId], references: [id])
+
+  @@unique([pollId, unitId]) // TAMPER-PROOF: one vote per unit per poll
+  @@map("votes")
+}
+
+// ═══════════════════════════════════════════════════════════
+// AMENITIES & BOOKINGS
+// ═══════════════════════════════════════════════════════════
+
+model Amenity {
+  id            String   @id @default(uuid())
+  societyId     String   @map("society_id")
+  name          String   // "Clubhouse Party Hall", "Badminton Court"
+  description   String?
+  operatingHours String? @map("operating_hours") // e.g. "06:00-22:00"
+  slotMinutes   Int      @default(120) @map("slot_minutes")
+  bookingFee    Decimal? @db.Decimal(12, 2) @map("booking_fee")
+  depositAmount Decimal? @db.Decimal(12, 2) @map("deposit_amount")
+  maxAdvanceDays Int     @default(30) @map("max_advance_days")
+  requiresClearDues Boolean @default(true) @map("requires_clear_dues")
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  society  Society   @relation(fields: [societyId], references: [id])
+  bookings Booking[]
+
+  @@unique([societyId, name])
+  @@map("amenities")
+}
+
+model Booking {
+  id        String   @id @default(uuid())
+  amenityId String   @map("amenity_id")
+  unitId    String   @map("unit_id")
+  userId    String   @map("user_id")
+  date      DateTime @db.Date
+  startTime String   @map("start_time") // "10:00"
+  endTime   String   @map("end_time")   // "12:00"
+  status    String   @default("CONFIRMED") // BookingStatus
+  fee       Decimal? @db.Decimal(12, 2)
+  notes     String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  amenity Amenity @relation(fields: [amenityId], references: [id])
+  unit    Unit    @relation(fields: [unitId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
+
+  // Conflict prevention: no two confirmed bookings for same amenity + date + overlapping time
+  @@unique([amenityId, date, startTime, status])
+  @@map("bookings")
+}
+
+// ═══════════════════════════════════════════════════════════
+// DOCUMENTS & AUDIT
+// ═══════════════════════════════════════════════════════════
+
+model Document {
+  id        String   @id @default(uuid())
+  societyId String   @map("society_id")
+  title     String
+  category  String   // BYE_LAWS, AUDIT_REPORT, INSURANCE, AMC, CIRCULAR
+  fileUrl   String   @map("file_url")
+  version   Int      @default(1)
+  scope     String   @default("SOCIETY") // SOCIETY, WING
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  society Society @relation(fields: [societyId], references: [id])
+
+  @@map("documents")
+}
+
+/// Immutable audit log — write-only, no UPDATE/DELETE.
+model AuditLog {
+  id        String   @id @default(uuid())
+  societyId String   @map("society_id")
+  actorId   String?  @map("actor_id")
+  action    String   // CREATE, UPDATE, DELETE, LOGIN, PAYMENT, VOTE
+  entity    String   // table/model name
+  entityId  String?  @map("entity_id")
+  before    Json?    // snapshot before
+  after     Json?    // snapshot after
+  ip        String?
+  userAgent String?  @map("user_agent")
+  timestamp DateTime @default(now())
+
+  society Society @relation(fields: [societyId], references: [id])
+
+  @@map("audit_logs")
+}
